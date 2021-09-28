@@ -148,3 +148,4 @@ cython_debug/
 out
 gen
 load_files.db
+static

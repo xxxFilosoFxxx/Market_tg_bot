@@ -6,12 +6,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 
 from db_model import Base, MediaIds
-from config import API_TOKEN, DB_FILENAME
+from config import API_TOKEN, DB_FILENAME, ID_ACCOUNT
 
 logging.basicConfig(format=u'%(filename)s [ LINE:%(lineno)+3s ]#%(levelname)+8s [%(asctime)s]  %(message)s',
                     level=logging.DEBUG)
 
-ID_ACCOUNT = 77777
 BASE_MEDIA_PATH = './static'
 engine = create_engine(f'sqlite:///{DB_FILENAME}')
 if not os.path.isfile(f'./{DB_FILENAME}'):
