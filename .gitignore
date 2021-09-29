@@ -148,4 +148,5 @@ cython_debug/
 out
 gen
 *.db
+catalog.py
 static

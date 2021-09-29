@@ -2,7 +2,7 @@ import logging
 import uuid
 import typing
 import config
-
+import catalog
 
 from aiogram import Bot, Dispatcher, executor, types, md
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -12,6 +12,7 @@ from aiogram.utils.exceptions import MessageNotModified, Throttled
 from config import DB_FILENAME, ID_PAYMENT
 from bot_db import BotDB
 
+
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=config.API_TOKEN, parse_mode=types.ParseMode.HTML)
@@ -19,10 +20,6 @@ storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 dp.middleware.setup(LoggingMiddleware())
 db = BotDB(DB_FILENAME)
-
-
-CATALOG = (('🧰prod_1', 'sub'),
-           ('prod_2', 'sub'))
 
 POSTS = {
     str(uuid.uuid4()): {
@@ -43,7 +40,7 @@ POSTS = {
                 '❓Если есть вопрос-пиши поддержке!\n\n'
                 '♻️Мы каждый день ищем для вас новые услуги и добавляем их в бота',
         'banner': config.BANNERS['banner_5'],
-        'keys': CATALOG
+        'keys': catalog.CATALOG_FOR_SUB
     },
     str(uuid.uuid4()): {
         'title': '📩Отправить жалобу',
@@ -105,6 +102,19 @@ def get_keyboard() -> types.InlineKeyboardMarkup:
                 post['title'],
                 callback_data=posts_cb.new(id=post_id, action='view')),
         )
+    return keyboard_markup
+
+
+def get_keyboard_post() -> types.InlineKeyboardMarkup:
+    keyboard_markup = types.InlineKeyboardMarkup()
+    for post_id, post in catalog.CATALOG_REALLY.items():
+        keyboard_markup.add(
+            types.InlineKeyboardButton(
+                post['title'],
+                callback_data=posts_cb.new(id=post_id, action='view_post')),
+        )
+    keyboard_markup.add(types.InlineKeyboardButton('🔗Вернуться к главному меню',
+                                                   callback_data=posts_cb.new(id='-', action='list')))
     return keyboard_markup
 
 
@@ -202,8 +212,35 @@ async def query_view(query: types.CallbackQuery, callback_data: typing.Dict[str,
     if not post:
         return await query.answer('Ошибка, перезапустите бота!')
 
+    if post['banner'] == config.BANNERS['banner_5'] and db.get_status_user(query.from_user.id):
+        text = md.text(
+            md.hbold('🔍Каталог услуг и товаров\n\n'),
+            md.text('⚠️Тут собраны лучшие и надеждые продавцы самых различных услуг.\n\n'
+                    '👁Внимательно изучи каждого-он пригодиться.\n\n'
+                    '❓Если есть вопрос-пиши поддержке!\n\n'
+                    '♻️Мы каждый день ищем для вас новые услуги и добавляем их в бота', )
+        )
+        await query.message.edit_media(media=types.InputMedia(media=config.BANNERS['banner_5']))
+        await query.message.edit_caption(caption=text, reply_markup=get_keyboard_post())
+    else:
+        text, keyboard_markup = format_post(post_id, post, 1)
+        await query.message.edit_media(media=types.InputMedia(media=post['banner']))
+        await query.message.edit_caption(caption=text, reply_markup=keyboard_markup)
+
+
+@dp.callback_query_handler(posts_cb.filter(action='view_post'))
+async def query_view_post(query: types.CallbackQuery, callback_data: typing.Dict[str, str]):
+    post_id = callback_data['id']
+
+    post = catalog.CATALOG_REALLY.get(post_id, None)
+    if not post:
+        return await query.answer('Ошибка, перезапустите бота!')
+
     text, keyboard_markup = format_post(post_id, post, 1)
-    await query.message.edit_media(media=types.InputMedia(media=post['banner']))
+    if post['banner'] == config.BANNERS['lamoda']:  # Любые гифки и видео придется отправлять так
+        await query.message.edit_media(media=types.InputMedia(type='video', media=post['banner']))
+    else:
+        await query.message.edit_media(media=types.InputMedia(media=post['banner']))
     await query.message.edit_caption(caption=text, reply_markup=keyboard_markup)
 
 
@@ -220,11 +257,14 @@ async def query_show_list(query: types.CallbackQuery):
 @dp.message_handler(user_id=ID_PAYMENT)
 async def payment_id_handler(message: types.Message):
     try:
-        if not db.user_exists(message.forward_from.id):
-            db.add_users(message.forward_from.id, True)
+        if db.get_status_user(message.forward_from.id):
+            await bot.send_message(message.chat.id, f'ID пользователя {message.forward_from.id} уже имеется в базе')
         else:
-            db.update_users(message.forward_from.id)
-        await bot.send_message(message.chat.id, f'ID пользователя {message.forward_from.id} успешно внесен в базу')
+            if not db.user_exists(message.forward_from.id):
+                db.add_users(message.forward_from.id, True)
+            else:
+                db.update_users(message.forward_from.id)
+            await bot.send_message(message.chat.id, f'ID пользователя {message.forward_from.id} успешно внесен в базу')
     except:
         await bot.send_message(message.chat.id, 'Не удалось найти пересланное сообщение или определить ID пользователя')
 
@@ -274,12 +314,6 @@ async def query_show_rules(query: types.CallbackQuery):
 
 @dp.callback_query_handler(posts_cb.filter(action='catalog'))
 async def query_show_catalog(query: types.CallbackQuery, callback_data: typing.Dict[str, str]):
-    post_id = callback_data['id']
-
-    post = POSTS.get(post_id, None)
-    if not post:
-        return await query.answer('Ошибка, перезапустите бота!')
-
     text = md.text(
         md.hbold('🔍Каталог услуг и товаров\n\n'),
         md.text('⚠️Тут собраны лучшие и надеждые продавцы самых различных услуг.\n\n'
@@ -287,125 +321,27 @@ async def query_show_catalog(query: types.CallbackQuery, callback_data: typing.D
                 '❓Если есть вопрос-пиши поддержке!\n\n'
                 '♻️Мы каждый день ищем для вас новые услуги и добавляем их в бота', )
     )
-    keyboard_markup = types.InlineKeyboardMarkup(row_width=1)
-    row_buttons = (types.InlineKeyboardButton(post_text, callback_data=posts_cb.new(id=post_id, action=data))
-                   for post_text, data in CATALOG)
-    keyboard_markup.add(*row_buttons)
-    keyboard_markup.add(types.InlineKeyboardButton('🔗Вернуться к главному меню',
-                                                   callback_data=posts_cb.new(id='-', action='list')))
-    await query.message.edit_media(media=types.InputMedia(media=config.BANNERS['banner_5']))
-    await query.message.edit_caption(caption=text, reply_markup=keyboard_markup)
+
+    if db.get_status_user(query.from_user.id):
+        await query.message.edit_media(media=types.InputMedia(media=config.BANNERS['banner_5']))
+        await query.message.edit_caption(caption=text, reply_markup=get_keyboard_post())
+    else:
+        post_id = callback_data['id']
+
+        post = POSTS.get(post_id, None)
+        if not post:
+            return await query.answer('Ошибка, перезапустите бота!')
+
+        keyboard_markup = types.InlineKeyboardMarkup(row_width=1)
+        row_buttons = (types.InlineKeyboardButton(post_text, callback_data=posts_cb.new(id=post_id, action=data))
+                       for post_text, data in catalog.CATALOG_FOR_SUB)
+        keyboard_markup.add(*row_buttons)
+        keyboard_markup.add(types.InlineKeyboardButton('🔗Вернуться к главному меню',
+                                                       callback_data=posts_cb.new(id='-', action='list')))
+        await query.message.edit_media(media=types.InputMedia(media=config.BANNERS['banner_5']))
+        await query.message.edit_caption(caption=text, reply_markup=keyboard_markup)
 
 
-# @dp.callback_query_handler(text='agree')
-# async def inline_agree_answer_callback_handler(query: types.CallbackQuery):
-#     answer_data = query.data
-#     await query.answer(f'Вы ответили {answer_data!r}')
-#     if answer_data == 'agree':
-#         text = 'Great, me too!'
-#     else:
-#         text = f'Неизвестная ошибка: {answer_data!r}!'
-#     await bot.send_message(query.from_user.id, text)
-
-
-# --------------------------------------------------------
-
-
-# @dp.callback_query_handler(text='no')
-# @dp.callback_query_handler(text='yes')
-# async def inline_kb_answer_callback_handler(query: types.CallbackQuery):
-#     answer_data = query.data
-#     # always answer callback queries, even if you have nothing to say
-#     await query.answer(f'You answered with {answer_data!r}')
-#
-#     if answer_data == 'yes':
-#         text = 'Great, me too!'
-#     elif answer_data == 'no':
-#         text = 'Oh no...Why so?'
-#     else:
-#         text = f'Unexpected callback data {answer_data!r}!'
-#
-#     await bot.send_message(query.from_user.id, text)
-
-
-# @dp.message_handler()
-# async def echo(message: types.Message):
-#     # old style:
-#     # await bot.send_message(message.chat.id, message.text)
-#
-#     await message.answer(message.text)
-
-
-# --------------------------------------
-
-# POSTS = {
-#     str(uuid.uuid4()): {
-#         'title': f'Post {index}',
-#         'body': 'Lorem ipsum dolor sit amet, '
-#                 'consectetur adipiscing elit, '
-#                 'sed do eiusmod tempor incididunt ut '
-#                 'labore et dolore magna aliqua',
-#         'votes': random.randint(-2, 5),
-#     } for index in range(1, 6)
-# }
-#
-# posts_cb = CallbackData('post', 'id', 'action')  # post:<id>:<action>
-#
-#
-# def get_keyboard() -> types.InlineKeyboardMarkup:
-#     """
-#     Generate keyboard with list of posts
-#     """
-#     markup = types.InlineKeyboardMarkup()
-#     for post_id, post in POSTS.items():
-#         markup.add(
-#             types.InlineKeyboardButton(
-#                 post['title'],
-#                 callback_data=posts_cb.new(id=post_id, action='view')),
-#         )
-#     return markup
-#
-#
-# def format_post(post_id: str, post: dict) -> (str, types.InlineKeyboardMarkup):
-#     text = md.text(
-#         md.hbold(post['title']),
-#         md.quote_html(post['body']),
-#         '',  # just new empty line
-#         f"Votes: {post['votes']}",
-#         sep='\n',
-#     )
-#
-#     markup = types.InlineKeyboardMarkup()
-#     markup.row(
-#         types.InlineKeyboardButton('👍', callback_data=posts_cb.new(id=post_id, action='like')),
-#         types.InlineKeyboardButton('👎', callback_data=posts_cb.new(id=post_id, action='dislike')),
-#     )
-#     markup.add(types.InlineKeyboardButton('<< Back', callback_data=posts_cb.new(id='-', action='list')))
-#     return text, markup
-#
-#
-# @dp.message_handler(commands='start')
-# async def cmd_start(message: types.Message):
-#     await message.reply('Posts', reply_markup=get_keyboard())
-#
-#
-# @dp.callback_query_handler(posts_cb.filter(action='list'))
-# async def query_show_list(query: types.CallbackQuery):
-#     await query.message.edit_text('Posts', reply_markup=get_keyboard())
-#
-#
-# @dp.callback_query_handler(posts_cb.filter(action='view'))
-# async def query_view(query: types.CallbackQuery, callback_data: typing.Dict[str, str]):
-#     post_id = callback_data['id']
-#
-#     post = POSTS.get(post_id, None)
-#     if not post:
-#         return await query.answer('Unknown post!')
-#
-#     text, markup = format_post(post_id, post)
-#     await query.message.edit_text(text, reply_markup=markup)
-#
-#
 # @dp.callback_query_handler(posts_cb.filter(action=['like', 'dislike']))
 # async def query_post_vote(query: types.CallbackQuery, callback_data: typing.Dict[str, str]):
 #     try:
