@@ -147,5 +147,5 @@ cython_debug/
 *.iml
 out
 gen
-load_files.db
+*.db
 static

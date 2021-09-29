@@ -3,11 +3,14 @@ import uuid
 import typing
 import config
 
+
 from aiogram import Bot, Dispatcher, executor, types, md
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.utils.callback_data import CallbackData
 from aiogram.utils.exceptions import MessageNotModified, Throttled
+from config import DB_FILENAME, ID_PAYMENT
+from bot_db import BotDB
 
 logging.basicConfig(level=logging.INFO)
 
@@ -15,16 +18,15 @@ bot = Bot(token=config.API_TOKEN, parse_mode=types.ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 dp.middleware.setup(LoggingMiddleware())
+db = BotDB(DB_FILENAME)
 
-CATALOG = (('Первый продавец', 'sub'),  # prod_1
-           ('Второй продавец', 'sub'),
-           ('Третий продавец', 'sub')
-           )
 
+CATALOG = (('🧰prod_1', 'sub'),
+           ('prod_2', 'sub'))
 
 POSTS = {
     str(uuid.uuid4()): {
-        'title': '📖Инсткрукция к применению',
+        'title': '📖Инструкция к применению',
         'body': '☑️Мы собрали <b>продавцов самых крутых услуг</b> и товаров на рынке Telegram.\n\n'
                 '☑️Для того,что бы вам <b>подробнее рассказали</b> про услугу-пишите продавцу в личные сообщения.\n\n'
                 '☑️Все продавцы <b>имеют репутацию</b> и многолетние отзывы.\n\n'
@@ -71,7 +73,7 @@ POSTS = {
                 '⚠️  Присылать анкету 1 сообщением.\n'
                 '└❗️ Без отзывов и веток анкета не пройдёт проверку',
         'banner': config.BANNERS['avatar'],
-        'keys': (('📝Отправить анкету', 'contact'), )
+        'keys': (('📝Отправить анкету', 'contact'),)
     },
     str(uuid.uuid4()): {
         'title': '🌎Наш MARKETPLACE',
@@ -81,7 +83,7 @@ POSTS = {
                 'Заходи - изучай!\n'
                 '{}'.format(config.URL_CHAT),
         'banner': config.BANNERS['avatar'],
-        'keys': (('💬Консультация', 'contact'), )
+        'keys': (('💬Консультация', 'contact'),)
     }
 }
 
@@ -189,7 +191,6 @@ async def inline_agree_answer_callback_handler_3(query: types.CallbackQuery):
                          'другого участника Бота без использования Гарант-сервиса от Администрации Бота.\n\n' \
                          '⚠️ Пользуясь Ботом «{}», Вы автоматически принимаете условия Соглашения в полном ' \
                          'объёме.'.format(config.APP_NAME)
-    # TODO: при соглашении и/или подписке закидывать айди пользователя (чата) в БД
     await query.message.edit_caption(caption=text_for_agreement, reply_markup=keyboard_markup)
 
 
@@ -208,26 +209,45 @@ async def query_view(query: types.CallbackQuery, callback_data: typing.Dict[str,
 
 @dp.callback_query_handler(posts_cb.filter(action='list'))
 async def query_show_list(query: types.CallbackQuery):
+    if not db.user_exists(query.from_user.id):
+        db.add_users(query.from_user.id)
     await query.message.edit_media(media=types.InputMedia(media=config.BANNERS['banner_3']))
     await query.message.edit_caption(caption='👋Доброго времени суток, ты находишься в {}.\n\n'
                                              '👀Внимательно прочти каждую кнопку снизу!'.format(config.APP_NAME),
                                      reply_markup=get_keyboard())
 
 
-@dp.callback_query_handler(posts_cb.filter(action='sub'))  # ['prod_1', 'prod_2', 'prod_3']
+@dp.message_handler(user_id=ID_PAYMENT)
+async def payment_id_handler(message: types.Message):
+    try:
+        if not db.user_exists(message.forward_from.id):
+            db.add_users(message.forward_from.id, True)
+        else:
+            db.update_users(message.forward_from.id)
+        await bot.send_message(message.chat.id, f'ID пользователя {message.forward_from.id} успешно внесен в базу')
+    except:
+        await bot.send_message(message.chat.id, 'Не удалось найти пересланное сообщение или определить ID пользователя')
+
+
+@dp.callback_query_handler(posts_cb.filter(action='sub'))
 async def query_show_sub(query: types.CallbackQuery):
-    # text_and_data = (('Оплатить', 'pay_sub'),)
-    # keyboard_markup = add_keyboard_markup(text_and_data, 1)
-    keyboard_markup = types.InlineKeyboardMarkup()
-    keyboard_markup.add(types.InlineKeyboardButton('💰Оплатить', url=config.URL_MANE_CONTACT))
-    keyboard_markup.add(types.InlineKeyboardButton('🔗Вернуться к главному меню',
-                                                   callback_data=posts_cb.new(id='-', action='list')))
-    text = '🚸Мы старались и делали для вас этого бота, чтобы вы могли больше ' \
-           'не переживать за порядочность и качество!\n\n' \
-           '⚠️Чтобы пользоваться услугами нашего бота нужно оплатить подписку.\n\n' \
-           'Нажми на <b>кнопку ниже</b>, вам расскажут более подробно преимущества нашего бота.'
-    await query.message.edit_media(media=types.InputMedia(media=config.BANNERS['banner_8']))
-    await query.message.edit_caption(caption=text, reply_markup=keyboard_markup, parse_mode='HTML')
+    if db.get_status_user(query.from_user.id):
+        keyboard_markup = types.InlineKeyboardMarkup()
+        keyboard_markup.add(types.InlineKeyboardButton('🔗Вернуться к главному меню',
+                                                       callback_data=posts_cb.new(id='-', action='list')))
+        await query.message.edit_media(media=types.InputMedia(media=config.BANNERS['banner_8']))
+        await query.message.edit_caption(caption='', reply_markup=keyboard_markup, parse_mode='HTML')
+    else:
+        keyboard_markup = types.InlineKeyboardMarkup()
+        keyboard_markup.add(types.InlineKeyboardButton('💰Оплатить', url=config.URL_MANE_CONTACT))
+        keyboard_markup.add(types.InlineKeyboardButton('🔗Вернуться к главному меню',
+                                                       callback_data=posts_cb.new(id='-', action='list')))
+        text = '🚸Мы старались и делали для вас этого бота, чтобы вы могли больше ' \
+               'не переживать за порядочность и качество!\n\n' \
+               '⚠️Чтобы пользоваться услугами нашего бота нужно оплатить подписку.\n\n' \
+               'Нажми на <b>кнопку ниже</b>, вам расскажут более подробно преимущества нашего бота.'
+        await query.message.edit_media(media=types.InputMedia(media=config.BANNERS['banner_8']))
+        await query.message.edit_caption(caption=text, reply_markup=keyboard_markup, parse_mode='HTML')
 
 
 @dp.callback_query_handler(posts_cb.filter(action='complaint_rules'))
@@ -265,7 +285,7 @@ async def query_show_catalog(query: types.CallbackQuery, callback_data: typing.D
         md.text('⚠️Тут собраны лучшие и надеждые продавцы самых различных услуг.\n\n'
                 '👁Внимательно изучи каждого-он пригодиться.\n\n'
                 '❓Если есть вопрос-пиши поддержке!\n\n'
-                '♻️Мы каждый день ищем для вас новые услуги и добавляем их в бота',)
+                '♻️Мы каждый день ищем для вас новые услуги и добавляем их в бота', )
     )
     keyboard_markup = types.InlineKeyboardMarkup(row_width=1)
     row_buttons = (types.InlineKeyboardButton(post_text, callback_data=posts_cb.new(id=post_id, action=data))
@@ -415,5 +435,11 @@ async def message_not_modified_handler(update, error):
     return True  # errors_handler must return True if error was handled correctly
 
 
+async def shutdown(dispatcher: Dispatcher):
+    db.close()
+    await dp.storage.close()
+    await dp.storage.wait_closed()
+
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_shutdown=shutdown)
